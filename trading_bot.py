@@ -9,8 +9,10 @@ from textblob import TextBlob
 from nltk.sentiment import SentimentIntensityAnalyzer
 import nltk
 import matplotlib
+
 matplotlib.use('Agg', force=True)
 nltk.download('vader_lexicon', quiet=True)
+VADER = SentimentIntensityAnalyzer()
 import backtrader as bt
 from alpha_vantage.timeseries import TimeSeries
 from ta.momentum import RSIIndicator
@@ -72,14 +74,15 @@ def fetch_newsapi_articles(api_key, query, count=100):
         logging.error(f"Error fetching NewsAPI articles: {e}")
         return []
 
-def analyze_sentiment(posts):
-    """Return combined polarity score using TextBlob and VADER."""
+def analyze_sentiment(posts, vader_weight=0.5):
+    """Return weighted polarity using TextBlob and VADER."""
     if not posts:
         return 0.0
-    blob_scores = [TextBlob(post).sentiment.polarity for post in posts]
-    sia = SentimentIntensityAnalyzer()
-    vader_scores = [sia.polarity_scores(post)['compound'] for post in posts]
-    return float(np.mean(blob_scores + vader_scores))
+    blob_scores = [TextBlob(p).sentiment.polarity for p in posts]
+    vader_scores = [VADER.polarity_scores(p)['compound'] for p in posts]
+    combined = [(1 - vader_weight) * b + vader_weight * v
+                for b, v in zip(blob_scores, vader_scores)]
+    return float(np.mean(combined))
 
 def get_alpha_vantage_client(config):
     return TimeSeries(key=config['alphavantage']['api_key'], output_format='pandas')
@@ -116,12 +119,12 @@ def generate_signals(df, sentiment, holding_days):
         date = df.index[i]
 
         if position is None:
-            if rsi < 45 and sentiment > 0.1:
+            if rsi < 40 and sentiment > 0.05:
                 position = 'LONG'
                 entry_price = close
                 entry_index = i
                 signals.append({'date': date, 'signal': 'BUY', 'price': close})
-            elif rsi > 55 and sentiment < -0.1:
+            elif rsi > 60 and sentiment < -0.05:
                 position = 'SHORT'
                 entry_price = close
                 entry_index = i
@@ -132,9 +135,9 @@ def generate_signals(df, sentiment, holding_days):
             take_profit = entry_price * (1 + 0.02) if position == 'LONG' else entry_price * (1 - 0.02)
             exit_signal = False
             if position == 'LONG':
-                exit_signal = rsi > 55 or close < stop_loss or close > take_profit
+                exit_signal = rsi > 60 or close < stop_loss or close > take_profit
             else:
-                exit_signal = rsi < 45 or close > stop_loss or close < take_profit
+                exit_signal = rsi < 40 or close > stop_loss or close < take_profit
             if exit_signal or days_held >= holding_days:
                 signals.append({'date': date, 'signal': 'CLOSE', 'price': close})
                 position = None
@@ -164,13 +167,13 @@ class LongShortStrategy(bt.Strategy):
 
     def next(self):
         if not self.position:
-            if (self.rsi[0] < 45 and self.p.sentiment > 0.1):
+            if (self.rsi[0] < 40 and self.p.sentiment > 0.05):
                 size = calculate_position_size(self.p.capital, self.data.close[0], self.p.risk_pct)
                 self.order = self.buy(size=size)
                 self.entry_price = self.data.close[0]
                 self.entry_bar = len(self)
                 self.direction = 'long'
-            elif (self.rsi[0] > 55 and self.p.sentiment < -0.1):
+            elif (self.rsi[0] > 60 and self.p.sentiment < -0.05):
                 size = calculate_position_size(self.p.capital, self.data.close[0], self.p.risk_pct)
                 self.order = self.sell(size=size)
                 self.entry_price = self.data.close[0]
@@ -181,12 +184,12 @@ class LongShortStrategy(bt.Strategy):
             if self.direction == 'long':
                 stop_loss = self.entry_price * (1 - self.p.stop_loss_pct)
                 take_profit = self.entry_price * (1 + self.p.stop_loss_pct)
-                exit_cond = (self.rsi[0] > 55 or self.data.close[0] < stop_loss
+                exit_cond = (self.rsi[0] > 60 or self.data.close[0] < stop_loss
                              or self.data.close[0] > take_profit)
             else:
                 stop_loss = self.entry_price * (1 + self.p.stop_loss_pct)
                 take_profit = self.entry_price * (1 - self.p.stop_loss_pct)
-                exit_cond = (self.rsi[0] < 45 or self.data.close[0] > stop_loss
+                exit_cond = (self.rsi[0] < 40 or self.data.close[0] > stop_loss
                              or self.data.close[0] < take_profit)
             if exit_cond or days_held >= self.p.holding_days:
                 self.order = self.close()
