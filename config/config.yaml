@@ -1,0 +1,5 @@
+# Example config.yaml for trading bot
+alphavantage:
+  api_key: "EFFMKOT1C6I3M8OE"
+newsapi:
+  api_key: "86355f10cb214c1c8918969170d32eeb"
