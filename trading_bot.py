@@ -1,14 +1,18 @@
 import os
-import sys
 import yaml
 import logging
 import click
 import pandas as pd
 import numpy as np
-import yfinance as yf
 import requests
 from textblob import TextBlob
-from datetime import datetime, timedelta
+from nltk.sentiment import SentimentIntensityAnalyzer
+import nltk
+import matplotlib
+
+matplotlib.use('Agg', force=True)
+nltk.download('vader_lexicon', quiet=True)
+VADER = SentimentIntensityAnalyzer()
 import backtrader as bt
 from alpha_vantage.timeseries import TimeSeries
 from ta.momentum import RSIIndicator
@@ -29,9 +33,16 @@ def setup_logging(log_path='logs/trading.log'):
 
 # ========== DATA ACQUISITION ===========
 
-def fetch_stock_data(ticker, period="6mo", config=None):
+def fetch_stock_data(ticker, period="6mo", exchange="BSE", config=None):
+    """Fetch daily stock data from Alpha Vantage.
+
+    The exchange parameter allows pulling either BSE or NSE symbols
+    supported by Alpha Vantage. Defaults to BSE as coverage is more
+    reliable for Indian equities.
+    """
     ts = get_alpha_vantage_client(config)
-    data, meta = ts.get_daily(symbol=f"{ticker}.NS", outputsize='full')
+    symbol = f"{ticker}.{exchange}"
+    data, meta = ts.get_daily(symbol=symbol, outputsize='full')
     df = data.rename(columns={
         '1. open': 'Open',
         '2. high': 'High',
@@ -63,20 +74,27 @@ def fetch_newsapi_articles(api_key, query, count=100):
         logging.error(f"Error fetching NewsAPI articles: {e}")
         return []
 
-def analyze_sentiment(posts):
+def analyze_sentiment(posts, vader_weight=0.5):
+    """Return weighted polarity using TextBlob and VADER."""
     if not posts:
         return 0.0
-    polarity = [TextBlob(post).sentiment.polarity for post in posts]
-    return np.mean(polarity)
+    blob_scores = [TextBlob(p).sentiment.polarity for p in posts]
+    vader_scores = [VADER.polarity_scores(p)['compound'] for p in posts]
+    combined = [(1 - vader_weight) * b + vader_weight * v
+                for b, v in zip(blob_scores, vader_scores)]
+    return float(np.mean(combined))
 
 def get_alpha_vantage_client(config):
     return TimeSeries(key=config['alphavantage']['api_key'], output_format='pandas')
 
 # ========== TECHNICAL ANALYSIS ===========
 
-def compute_rsi(df, period=14):
-    rsi_indicator = RSIIndicator(close=df['Close'], window=period)
+def compute_indicators(df, rsi_period=14, ma_period=20):
+    """Add RSI and moving average indicators to the dataframe."""
+    rsi_indicator = RSIIndicator(close=df['Close'], window=rsi_period)
     df['RSI'] = rsi_indicator.rsi()
+    df['MA'] = df['Close'].rolling(window=ma_period).mean()
+    df.dropna(inplace=True)
     return df
 
 # ========== RISK MANAGEMENT ===========
@@ -89,8 +107,9 @@ def calculate_position_size(capital, price, risk_pct=0.01):
 # ========== STRATEGY LOGIC ===========
 
 def generate_signals(df, sentiment, holding_days):
+    """Generate long or short signals based on RSI, MA and sentiment."""
     signals = []
-    in_short = False
+    position = None
     entry_price = 0
     entry_index = None
 
@@ -99,20 +118,29 @@ def generate_signals(df, sentiment, holding_days):
         close = df['Close'].iloc[i]
         date = df.index[i]
 
-        # Entry condition
-        if not in_short and rsi > 70 and sentiment < -0.5:
-            signals.append({'date': date, 'signal': 'SELL', 'price': close})
-            in_short = True
-            entry_price = close
-            entry_index = i
-
-        # Exit condition
-        elif in_short and entry_index is not None:
-            days_held = i - entry_index
-            stop_loss_price = entry_price * 1.02
-            if rsi < 30 or days_held >= holding_days or close > stop_loss_price:
+        if position is None:
+            if rsi < 40 and sentiment > 0.05:
+                position = 'LONG'
+                entry_price = close
+                entry_index = i
                 signals.append({'date': date, 'signal': 'BUY', 'price': close})
-                in_short = False
+            elif rsi > 60 and sentiment < -0.05:
+                position = 'SHORT'
+                entry_price = close
+                entry_index = i
+                signals.append({'date': date, 'signal': 'SELL', 'price': close})
+        else:
+            days_held = i - entry_index
+            stop_loss = entry_price * (1 - 0.02) if position == 'LONG' else entry_price * (1 + 0.02)
+            take_profit = entry_price * (1 + 0.02) if position == 'LONG' else entry_price * (1 - 0.02)
+            exit_signal = False
+            if position == 'LONG':
+                exit_signal = rsi > 60 or close < stop_loss or close > take_profit
+            else:
+                exit_signal = rsi < 40 or close > stop_loss or close < take_profit
+            if exit_signal or days_held >= holding_days:
+                signals.append({'date': date, 'signal': 'CLOSE', 'price': close})
+                position = None
                 entry_price = 0
                 entry_index = None
 
@@ -120,7 +148,7 @@ def generate_signals(df, sentiment, holding_days):
 
 # ========== BACKTESTING ===========
 
-class ShortStrategy(bt.Strategy):
+class LongShortStrategy(bt.Strategy):
     params = (
         ('sentiment', 0.0),
         ('holding_days', 5),
@@ -131,51 +159,76 @@ class ShortStrategy(bt.Strategy):
 
     def __init__(self):
         self.rsi = bt.indicators.RSI(self.datas[0], period=14)
+        self.ma = bt.indicators.SimpleMovingAverage(self.datas[0].close, period=20)
         self.order = None
         self.entry_price = None
         self.entry_bar = None
+        self.direction = None
 
     def next(self):
         if not self.position:
-            if self.rsi[0] > 70 and self.p.sentiment < -0.5:
+            if (self.rsi[0] < 40 and self.p.sentiment > 0.05):
+                size = calculate_position_size(self.p.capital, self.data.close[0], self.p.risk_pct)
+                self.order = self.buy(size=size)
+                self.entry_price = self.data.close[0]
+                self.entry_bar = len(self)
+                self.direction = 'long'
+            elif (self.rsi[0] > 60 and self.p.sentiment < -0.05):
                 size = calculate_position_size(self.p.capital, self.data.close[0], self.p.risk_pct)
                 self.order = self.sell(size=size)
                 self.entry_price = self.data.close[0]
                 self.entry_bar = len(self)
+                self.direction = 'short'
         elif self.entry_bar is not None:
             days_held = len(self) - self.entry_bar
-            stop_loss_price = self.entry_price * (1 + self.p.stop_loss_pct)
-            if self.rsi[0] < 30 or days_held >= self.p.holding_days or self.data.close[0] > stop_loss_price:
-                self.order = self.buy(size=self.position.size)
+            if self.direction == 'long':
+                stop_loss = self.entry_price * (1 - self.p.stop_loss_pct)
+                take_profit = self.entry_price * (1 + self.p.stop_loss_pct)
+                exit_cond = (self.rsi[0] > 60 or self.data.close[0] < stop_loss
+                             or self.data.close[0] > take_profit)
+            else:
+                stop_loss = self.entry_price * (1 + self.p.stop_loss_pct)
+                take_profit = self.entry_price * (1 - self.p.stop_loss_pct)
+                exit_cond = (self.rsi[0] < 40 or self.data.close[0] > stop_loss
+                             or self.data.close[0] < take_profit)
+            if exit_cond or days_held >= self.p.holding_days:
+                self.order = self.close()
                 self.entry_bar = None
+                self.direction = None
 
 def run_backtest(df, sentiment, capital=100000):
     cerebro = bt.Cerebro()
     cerebro.broker.set_cash(capital)
     data = bt.feeds.PandasData(dataname=df)
     cerebro.adddata(data)
-    cerebro.addstrategy(ShortStrategy, sentiment=sentiment)
+    cerebro.addstrategy(LongShortStrategy, sentiment=sentiment)
     results = cerebro.run()
-    strat = results[0]
     portfolio_value = cerebro.broker.getvalue()
     returns = (portfolio_value - capital) / capital
     print(f"Total Return: {returns*100:.2f}%")
-    cerebro.plot()
+    logging.info(f"Backtest return: {returns*100:.2f}%")
+    try:
+        import matplotlib.pyplot as plt
+        plt.switch_backend('Agg')
+        cerebro.plot(style='candlestick')
+    except Exception as e:
+        logging.error(f"Plotting failed: {e}")
 
 # ========== CLI ===========
 
 @click.command()
-@click.option('--ticker', prompt='Stock ticker (NSE)', help='NSE stock ticker symbol (e.g., RELIANCE)')
+@click.option('--ticker', prompt='Stock ticker', help='Stock ticker symbol, e.g., RELIANCE')
+@click.option('--exchange', default='BSE', show_default=True, help='Exchange suffix such as BSE or NSE')
 @click.option('--capital', default=100000, help='Total trading capital')
 @click.option('--backtest', is_flag=True, help='Run backtest (Alpha Vantage only)')
-def main(ticker, capital, backtest):
+def main(ticker, exchange, capital, backtest):
     setup_logging()
     config = load_config()
     logging.info(f"Starting bot for {ticker}")
 
     # Data acquisition
-    df = fetch_stock_data(ticker, config=config)
-    df = compute_rsi(df)
+    df = fetch_stock_data(ticker, config=config, exchange=exchange)
+    df = compute_indicators(df)
     newsapi_key = config['newsapi']['api_key']
     articles = fetch_newsapi_articles(newsapi_key, ticker, count=100)
     sentiment = analyze_sentiment(articles)
