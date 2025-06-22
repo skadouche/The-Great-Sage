@@ -11,8 +11,27 @@ import nltk
 import matplotlib
 
 matplotlib.use('Agg', force=True)
-nltk.download('vader_lexicon', quiet=True)
-VADER = SentimentIntensityAnalyzer()
+
+class SentimentAnalyzer:
+    """Blend TextBlob polarity with VADER for robustness."""
+
+    def __init__(self, vader_weight: float = 0.7):
+        nltk.download('vader_lexicon', quiet=True)
+        self.vader = SentimentIntensityAnalyzer()
+        self.vader_weight = vader_weight
+
+    def analyze(self, posts):
+        if not posts:
+            return 0.0
+        blob_scores = [TextBlob(p).sentiment.polarity for p in posts]
+        vader_scores = [self.vader.polarity_scores(p)['compound'] for p in posts]
+        combined = [
+            (1 - self.vader_weight) * b + self.vader_weight * v
+            for b, v in zip(blob_scores, vader_scores)
+        ]
+        return float(np.mean(combined))
+
+
 import backtrader as bt
 from alpha_vantage.timeseries import TimeSeries
 from ta.momentum import RSIIndicator
@@ -74,15 +93,6 @@ def fetch_newsapi_articles(api_key, query, count=100):
         logging.error(f"Error fetching NewsAPI articles: {e}")
         return []
 
-def analyze_sentiment(posts, vader_weight=0.5):
-    """Return weighted polarity using TextBlob and VADER."""
-    if not posts:
-        return 0.0
-    blob_scores = [TextBlob(p).sentiment.polarity for p in posts]
-    vader_scores = [VADER.polarity_scores(p)['compound'] for p in posts]
-    combined = [(1 - vader_weight) * b + vader_weight * v
-                for b, v in zip(blob_scores, vader_scores)]
-    return float(np.mean(combined))
 
 def get_alpha_vantage_client(config):
     return TimeSeries(key=config['alphavantage']['api_key'], output_format='pandas')
@@ -166,14 +176,15 @@ class LongShortStrategy(bt.Strategy):
         self.direction = None
 
     def next(self):
+        close = self.data.close[0]
         if not self.position:
-            if (self.rsi[0] < 40 and self.p.sentiment > 0.05):
+            if self.rsi[0] < 40 and self.p.sentiment > 0.05:
                 size = calculate_position_size(self.p.capital, self.data.close[0], self.p.risk_pct)
                 self.order = self.buy(size=size)
                 self.entry_price = self.data.close[0]
                 self.entry_bar = len(self)
                 self.direction = 'long'
-            elif (self.rsi[0] > 60 and self.p.sentiment < -0.05):
+            elif self.rsi[0] > 60 and self.p.sentiment < -0.05:
                 size = calculate_position_size(self.p.capital, self.data.close[0], self.p.risk_pct)
                 self.order = self.sell(size=size)
                 self.entry_price = self.data.close[0]
@@ -184,13 +195,19 @@ class LongShortStrategy(bt.Strategy):
             if self.direction == 'long':
                 stop_loss = self.entry_price * (1 - self.p.stop_loss_pct)
                 take_profit = self.entry_price * (1 + self.p.stop_loss_pct)
-                exit_cond = (self.rsi[0] > 60 or self.data.close[0] < stop_loss
-                             or self.data.close[0] > take_profit)
+                exit_cond = (
+                    self.rsi[0] > 60
+                    or close < stop_loss
+                    or close > take_profit
+                )
             else:
                 stop_loss = self.entry_price * (1 + self.p.stop_loss_pct)
                 take_profit = self.entry_price * (1 - self.p.stop_loss_pct)
-                exit_cond = (self.rsi[0] < 40 or self.data.close[0] > stop_loss
-                             or self.data.close[0] < take_profit)
+                exit_cond = (
+                    self.rsi[0] < 40
+                    or close > stop_loss
+                    or close < take_profit
+                )
             if exit_cond or days_held >= self.p.holding_days:
                 self.order = self.close()
                 self.entry_bar = None
@@ -231,7 +248,8 @@ def main(ticker, exchange, capital, backtest):
     df = compute_indicators(df)
     newsapi_key = config['newsapi']['api_key']
     articles = fetch_newsapi_articles(newsapi_key, ticker, count=100)
-    sentiment = analyze_sentiment(articles)
+    analyzer = SentimentAnalyzer()
+    sentiment = analyzer.analyze(articles)
     logging.info(f"Sentiment for {ticker}: {sentiment:.2f}")
 
     if backtest:

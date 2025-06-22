@@ -1,2 +1,12 @@
 # Trading bot log file will be written here.
 2025-06-22 16:13:13,498 INFO Starting bot for Reliance.NS
+2025-06-22 17:10:00,949 INFO Starting bot for RELIANCE
+2025-06-22 17:10:04,269 INFO Sentiment for RELIANCE: 0.18
+2025-06-22 17:10:04,300 INFO Backtest return: 0.14%
+2025-06-22 17:10:04,529 INFO generated new fontManager
+2025-06-22 17:11:27,637 INFO Starting bot for RELIANCE
+2025-06-22 17:11:28,611 INFO Sentiment for RELIANCE: 0.23
+2025-06-22 17:11:28,633 INFO Backtest return: 0.00%
+2025-06-22 17:12:02,990 INFO Starting bot for RELIANCE
+2025-06-22 17:12:04,094 INFO Sentiment for RELIANCE: 0.23
+2025-06-22 17:12:04,117 INFO Backtest return: 0.14%
