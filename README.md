@@ -2,14 +2,17 @@
 
 This repository contains an experimental trading bot for Indian equities.
 It fetches market data from Alpha Vantage, performs headline sentiment
- analysis blending TextBlob with the VADER model from NLTK, and executes
+ analysis blending TextBlob with the VADER model from NLTK. If
+ `transformers` and the FinBERT model are available it will use those for
+ improved sentiment accuracy. The bot executes
 a simple long/short strategy that can be backtested with
 [Backtrader](https://www.backtrader.com/).
 
 ## Features
 - Fetches daily stock data from Alpha Vantage for BSE/NSE symbols
-- Retrieves recent news articles and computes sentiment using a weighted
-  blend of TextBlob and the VADER model for better accuracy
+- Retrieves recent news articles and computes sentiment using either
+  FinBERT (if available) or a weighted blend of TextBlob and the VADER
+  model for better accuracy
 - Calculates RSI and a 20-day moving average
 - Opens long positions when RSI falls below 40 and sentiment > 0.05
 - Opens short positions when RSI rises above 60 and sentiment < -0.05
