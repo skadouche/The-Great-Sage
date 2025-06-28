@@ -1,5 +1,6 @@
-# Example config.yaml for trading bot
+# Local configuration for The Great Sage trading bot
+# Replace the placeholder values with your own API keys
 alphavantage:
-  api_key: "EFFMKOT1C6I3M8OE"
+  api_key: "YOUR_ALPHA_VANTAGE_API_KEY"
 newsapi:
-  api_key: "86355f10cb214c1c8918969170d32eeb"
+  api_key: "YOUR_NEWSAPI_KEY"
