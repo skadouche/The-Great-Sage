@@ -22,4 +22,5 @@ pip install -r requirements.txt
 python trading_bot.py --ticker RELIANCE --exchange BSE --backtest
 ```
 
-Configuration such as API keys resides in `config/config.yaml`.
+Copy `config/config.example.yaml` to `config/config.yaml` and fill in your own API
+keys before running the bot.
