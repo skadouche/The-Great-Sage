@@ -1,0 +1,5 @@
+# Example configuration file for The Great Sage trading bot
+alphavantage:
+  api_key: "YOUR_ALPHA_VANTAGE_API_KEY"
+newsapi:
+  api_key: "YOUR_NEWSAPI_KEY"
