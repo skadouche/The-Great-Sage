@@ -8,6 +8,15 @@ import requests
 from textblob import TextBlob
 from nltk.sentiment import SentimentIntensityAnalyzer
 import nltk
+try:
+    from transformers import AutoTokenizer, AutoModelForSequenceClassification
+    import torch
+    FINBERT_TOKENIZER = AutoTokenizer.from_pretrained('ProsusAI/finbert')
+    FINBERT_MODEL = AutoModelForSequenceClassification.from_pretrained(
+        'ProsusAI/finbert')
+    FINBERT_AVAILABLE = True
+except Exception as e:  # pragma: no cover - optional dependency
+    FINBERT_AVAILABLE = False
 import matplotlib
 import backtrader as bt
 from alpha_vantage.timeseries import TimeSeries
@@ -83,10 +92,31 @@ def fetch_newsapi_articles(api_key, query, count=100):
         return []
 
 
-def analyze_sentiment(posts, vader_weight=0.5):
-    """Return weighted polarity using TextBlob and VADER."""
+def analyze_sentiment(posts, vader_weight=0.5, use_finbert=False):
+    """Return overall sentiment score from posts.
+
+    If ``use_finbert`` is True and the FinBERT model is available, a
+    transformer-based classifier is used to predict sentiment. Otherwise a
+    hybrid of TextBlob and VADER is returned.
+    """
     if not posts:
         return 0.0
+
+    if use_finbert and FINBERT_AVAILABLE:
+        try:
+            inputs = FINBERT_TOKENIZER(
+                posts, padding=True, truncation=True, return_tensors='pt'
+            )
+            with torch.no_grad():
+                outputs = FINBERT_MODEL(**inputs)
+                scores = torch.nn.functional.softmax(outputs.logits, dim=1)
+                positives = scores[:, 2]  # pos label index 2 in FinBERT
+            return float(positives.mean()) * 2 - 1  # scale to [-1, 1]
+        except Exception as e:  # pragma: no cover - runtime safety
+            logging.warning(
+                f"FinBERT failed: {e}. Falling back to basic model"
+            )
+
     blob_scores = [TextBlob(p).sentiment.polarity for p in posts]
     vader_scores = [VADER.polarity_scores(p)['compound'] for p in posts]
     combined = [(1 - vader_weight) * b + vader_weight * v
